@@ -10,10 +10,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// Document represents a stored document.
 type Document struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
-	Body      string    `json:"body"`
+	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -24,10 +25,17 @@ var (
 )
 
 func main() {
+	http.HandleFunc("/healthz", handleHealthz)
 	http.HandleFunc("/docs", handleDocs)
 	http.HandleFunc("/docs/", handleDocByID)
-	log.Println("docs-api listening on :8082")
-	log.Fatal(http.ListenAndServe(":8082", nil))
+	log.Println("docs-api listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// handleHealthz returns 200 OK for liveness/readiness probes.
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 }
 
 func handleDocs(w http.ResponseWriter, r *http.Request) {
@@ -43,23 +51,25 @@ func handleDocs(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var input struct {
-			Title string `json:"title"`
-			Body  string `json:"body"`
+			Title   string `json:"title"`
+			Content string `json:"content"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		now := time.Now().UTC()
 		doc := Document{
 			ID:        uuid.New().String(),
 			Title:     input.Title,
-			Body:      input.Body,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			Content:   input.Content,
+			CreatedAt: now,
+			UpdatedAt: now,
 		}
 		mu.Lock()
 		store[doc.ID] = doc
 		mu.Unlock()
+		log.Printf("POST /docs created id=%s title=%q", doc.ID, doc.Title)
 		writeJSON(w, http.StatusCreated, doc)
 
 	default:
@@ -86,9 +96,13 @@ func handleDocByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, doc)
 
 	case http.MethodPut:
+		if r.Body == nil {
+			http.Error(w, "missing request body", http.StatusBadRequest)
+			return
+		}
 		var input struct {
-			Title string `json:"title"`
-			Body  string `json:"body"`
+			Title   string `json:"title"`
+			Content string `json:"content"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -102,16 +116,25 @@ func handleDocByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		doc.Title = input.Title
-		doc.Body = input.Body
-		doc.UpdatedAt = time.Now()
+		doc.Content = input.Content
+		doc.UpdatedAt = time.Now().UTC()
 		store[id] = doc
 		mu.Unlock()
+		log.Printf("PUT /docs/%s updated title=%q", id, doc.Title)
 		writeJSON(w, http.StatusOK, doc)
 
 	case http.MethodDelete:
 		mu.Lock()
-		delete(store, id)
+		_, ok := store[id]
+		if ok {
+			delete(store, id)
+		}
 		mu.Unlock()
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("DELETE /docs/%s", id)
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
